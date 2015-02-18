@@ -23,19 +23,6 @@ Vagrant.configure("2") do |config|
   config.vm.provider :virtualbox do |vb|
     # RAM.
     vb.customize ["modifyvm", :id, "--memory", config_json["vm"]["memory"]]
-
-    # Synced Folders.
-    config_json["vm"]["synced_folders"].each do |folder|
-      case folder["type"]
-      when "nfs"
-        config.vm.synced_folder folder["host_path"], folder["guest_path"], type: "nfs"
-        # This uses uid and gid of the user that started vagrant.
-        config.nfs.map_uid = Process.uid
-        config.nfs.map_gid = Process.gid
-      else
-        config.vm.synced_folder folder["host_path"], folder["guest_path"]
-      end
-    end
   end
 
   # Run initial shell script.
@@ -54,4 +41,6 @@ Vagrant.configure("2") do |config|
   # Run final shell script.
   config.vm.provision :shell, :path => "chef/shell/final.sh", :args => config_json["vm"]["ip"]
 
+  # Install Terminus.
+  config.vm.provision :shell, :path => "pantheon/install-terminus.sh"
 end
