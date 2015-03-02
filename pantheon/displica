@@ -1,0 +1,422 @@
+#!/bin/bash
+
+# Default values for some variables.
+
+# Countries to run commands against.
+SITES=""
+# How many days in the past we want to fetch a DB dump from.
+DB_PAST_DAYS=0
+# Whether or not we want to sync a local DB from the daily dumps.
+DB_SYNC=0
+# Whether or not we want to sanitise the local DB.
+DB_SANITIZE=1
+# Whether or not we want the CDN on.
+CDN=0
+# Git-pull updates.
+GIT_PULL=1
+# Force git-pull when local repo's status is not clean.
+GIT_FORCE=0
+
+# Run a command through MySQL.
+displica_mysql_echo() {
+  # $1 is a MySQL query.
+  echo ${1} | mysql -h${MYSQL_HOST} -u${MYSQL_USER} -p${MYSQL_PASSWORD}
+}
+
+# Execute a batch (dump) through MySQL for a specific database.
+displica_mysql_cat() {
+  FILE_TYPE=$(file --mime-type ${1} | cut -d ":" -f 2 | tr -d " ")
+  CAT="cat"
+  if [ "${FILE_TYPE}" = "application/x-gzip" ]; then
+    CAT="zcat"
+  fi
+  # $1 is a MySQL dump file.
+  # $2 is the database to act upon.
+  ${CAT} ${1} | mysql -h${MYSQL_HOST} -u${MYSQL_USER} -p${MYSQL_PASSWORD} --database ${2}
+}
+
+# Print the help on the screen.
+displica_help() {
+  FULL_PATH=$(readlink -f $0)
+  BASE_NAME=$(basename ${FULL_PATH})
+  echo "Usage: ${BASE_NAME} [options] [site1 site2 ... siteN]"
+  echo "(currently located at ${FULL_PATH})"
+  echo
+  echo -e "  -h    | --help            Print this screen."
+  echo -e "  -l    | --site-list       List all countries available for deploy."
+  echo -e "  -d    | --db-sync         Sync local DB with the daily backup."
+  echo -e "  -S    | --no-sanitize     Prevent DB sanitization after import. Only works with --db-sync."
+  echo -e "  -C    | --no-cdn          Prevent the CDN to be tuned on. Only works with --update."
+  echo -e "  -p[X] | --db-past=[X]     Fetch daily backup from X days in the past. Only works with --db-sync."
+  echo -e "  -f    | --force           Force git-pull when the local repo's status is not clean."
+  echo -e "  -G    | --no-git-pull     Do not git-pull."
+  echo -e "  -a    | --all             Deploy all sites. Any list of countries provided will be ignored."
+  echo -e "  -Z    | --drop-dbs        Delete all databases currently present in MySQL (it will prompt for confirmation). All other options are ignored."
+  echo
+  echo -e "[site1 site2 ... siteN] is a list of site names\n(you can see them by running ${BASE_NAME} -l or by just not specifying any site)."
+  echo
+  exit 0
+}
+
+# Parse command line options.
+displica_parse_opts() {
+  SHORTOPTS="hldScp:fGaZ"
+  LONGOPTS="help,site-list,db-sync,no-sanitize,cdn,db-past:,force,no-git-pull,all,drop-dbs"
+
+  ARGS=$(getopt -s bash --options ${SHORTOPTS} --longoptions ${LONGOPTS} -- "$@")
+
+  eval set -- "${ARGS}"
+
+  while true; do
+    case $1 in
+      -h|--help)
+        displica_help
+        ;;
+      -l|--site-list)
+        displica_list_sites
+        ;;
+      -Z|--drop-dbs)
+        displica_drop_dbs
+        ;;
+      -d|--db-sync)
+        DB_SYNC=1
+        ;;
+      -S|--no-sanitize)
+        DB_SANITIZE=0
+        ;;
+      -c|--cdn)
+        CDN=1
+        ;;
+      -p|--db-past)
+        DB_PAST_DAYS=${2}
+        shift
+        ;;
+      -f|--force)
+        GIT_FORCE=1
+        ;;
+      -G|--no-git-pull)
+        GIT_PULL=0
+        ;;
+      -a|--all)
+        SITES=$(ls -d sites/britishcouncil.* | cut -d "." -f 2)
+        ;;
+      --)
+        break;;
+      *)
+        break;;
+    esac
+    shift
+  done
+
+  # Shift to have the first country code in $1.
+  shift
+  # If --all was not selected, read input.
+  if [ -z "$SITES" ]; then
+    SITES=$(echo $@)
+    # If no countries were found, present the list
+    # of the available ones then exit.
+    if [ -z "$SITES" ]; then
+      displica_list_sites
+    fi
+  fi
+}
+
+# List available SOLAS sites, then exit.
+displica_list_sites() {
+  echo
+  terminus sites list
+  exit 0
+}
+
+# Get DB name from site name.
+displica_db_name() {
+  echo "pantheon_$(echo ${1} | tr -d '-')"
+}
+
+displica_import_db() {
+  # ${1} => site name
+  # ${2} => environment (dev, test, live)
+  echo -e "\n[+]\t Importing $(echo ${2} | tr [:lower:] [:upper:]) database for $(echo ${1} | tr [:lower:] [:upper:])..."
+
+  # Current date.
+  DATE=$(date -d -${DB_PAST_DAYS}day +%F)
+
+  DB_BACKUP_TODAY=$(terminus site backup get --env=${2} --element=database --site=${1} --latest | cut -d "/" -f 7 | cut -d "?" -f 1)
+
+  if [ "${DB_BACKUP_TODAY}" = "" ]; then
+    echo -e "\n[+]\t No backup found for today. Creating one..."
+    DB_BACKUP_CREATED=$(terminus site backup create --site=${1} --env=${2} --element=all | grep Success | wc -l)
+    if [ ${DB_BACKUP_CREATED}  -ne 1 ]; then
+      echo -e "\n[+]\t Backup could not be created. Check your network connection or try later."
+      exit 1
+    fi
+    DB_BACKUP_TODAY=$(terminus site backup get --env=${2} --element=database --site=${1} --latest | cut -d "/" -f 7 | cut -d "?" -f 1)
+  fi
+
+  # If the DB dump for today does not exist, download it and unpack it.
+  if [ ! -s "/tmp/${DB_BACKUP_TODAY}" ]; then
+    # Download Live DB copy.
+    terminus site backup get --env=${2} --element=database --site=${1} --latest --to-directory=/tmp
+    if [ ! -s "/tmp/${DB_BACKUP_TODAY}" ]; then
+      echo -e "\n[+]\t Backup could not be downloaded. Check your network connection or try later."
+      exit 1
+    fi
+  else
+    echo -e "\n[+]\t Using previously downloaded dump at" /tmp/${DB_BACKUP_TODAY}
+  fi
+
+  DB_NAME=$(displica_db_name ${1})
+
+  # Drop and Recreate DB before importing the live copy.
+  displica_mysql_echo "DROP DATABASE IF EXISTS ${DB_NAME};"
+  displica_mysql_echo "CREATE DATABASE IF NOT EXISTS ${DB_NAME};"
+  displica_mysql_echo "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, INDEX, ALTER ON ${DB_NAME}.* TO '${DRUPAL_DB_USER}'@'${DRUPAL_WEB_HOST}' IDENTIFIED BY '${DRUPAL_DB_PASSWORD}';"
+
+  # Import Live DB.
+  displica_mysql_cat /tmp/${DB_BACKUP_TODAY} ${DB_NAME}
+}
+
+# Sanitise database.
+displica_sanitize_db() {
+  # ${1} => Country code
+  echo -e "\n[+]\t Sanitising DB for $(echo ${1} | tr [:lower:] [:upper:])..."
+  # Sanitise the DB.
+  drush @${1} sql-sanitize --sanitize-email="%name@example.com" -y 2>&1 | displica_log -
+  # Special password for 'admin' (admin).
+  drush @${1} upwd admin --password=admin -y 2>&1 | displica_log -
+}
+
+displica_drop_dbs() {
+  echo "This action is going to DELETE ALL local pantheon database."
+  read -p "Are you sure you wish to continue? [N/y]" -n 1 -r
+  echo
+  if [[ $REPLY =~ ^[Yy]$ ]]
+  then
+    for DB in $(displica_mysql_echo "SHOW DATABASES" | grep pantheon_)
+      do
+        CC=$(echo ${DB} | cut -d "_" -f 2)
+        echo -e "Dropping database for ${CC}";
+        displica_mysql_echo "DROP DATABASE IF EXISTS ${DB};"
+      done
+  else
+    echo "Operation cancelled. Pantheon databases were not deleted."
+    echo
+  fi
+  exit 0
+}
+
+# Print message in case of error.
+displica_error_check() {
+  # If there was an error, print the message ${1} and exit.
+  if [ $? -ne 0 ]
+  then
+    echo -e "\n[-]\t" ${1}
+    exit 1
+  fi
+}
+
+# Check repository's status.
+displica_check_repository() {
+  # If repo's status is not clean and the FORCE flag is off, throw an error and
+  # terminate the script.
+  if [ $(git status | grep "nothing to commit (working directory clean)" | wc -l) -eq 0 ]  && [ ${GIT_FORCE} -eq 0 ]
+  then
+    echo -e "\nYour local repository is not clean (uncommitted or untracked files).\n
+    Please review or use -f|--force to ignore the unclean repository status (not recommneded)."
+    exit 1
+  fi
+}
+
+# Enable the live site to act as a CDN for the local site.
+displica_enable_cdn() {
+  if [ ${CDN} -eq 1 ]; then
+    # $1 is the country code.
+    echo -e "\n[+]\t Activating live environment as CDN for $(echo ${1} | tr [:lower:] [:upper:])..."
+    drush @${1} en cdn -y 2>&1 | displica_log -
+    echo "<?php" > sites/britishcouncil.${1}/settings.local.php
+    echo '$conf["cdn_status"] = 2;' >> sites/britishcouncil.${1}/settings.local.php
+    echo "\$conf['cdn_basic_mapping'] = 'http://${1}.live.solas.britishcouncil.net|.jpg .jpeg .png .gif .doc .docx .xls .xlsx .ppt .pptx';" >> sites/britishcouncil.${1}/settings.local.php
+  fi
+}
+
+# Run updb for a site.
+displica_updb() {
+  # $1 is the SITE.
+  echo -e "\n[+]\t Updating DB for $(echo ${1} | tr [:lower:] [:upper:])..."
+  drush @${1} updb -y
+}
+
+# Clear caches and revert features.
+displica_clear_caches() {
+  # $1 is SITE.
+  echo -e "\n[+]\t Clearing drush cache for $(echo ${1} | tr [:lower:] [:upper:])..."
+  drush @${1} cc drush 2>&1 | displica_log -
+  echo -e "\n[+]\t Clearing all caches for $(echo ${1} | tr [:lower:] [:upper:])..."
+  drush @${1} cc all -y 2>&1 | displica_log -
+}
+
+
+# Print a title section. Just fancy output.
+displica_print_title() {
+  echo -e "\n[+]\t -------------------------------------------------------------------------------"
+  echo -e "\n[+]\t ${1}"
+  echo -e "\n[+]\t -------------------------------------------------------------------------------"
+}
+
+# Initialise the log for the new run.
+displica_initialize_log() {
+  echo "" > ${LOG_FILE}
+  displica_log "Starting execution of ${1}"
+}
+
+# Log a string to the log file.
+displica_log() {
+  INPUT=""
+  # If the $1 parameter is -, then read from the standard input.
+  if [ "x$1" = "x-" ]; then
+    while read INPUT; do
+      echo '['$(date +%Y-%m-%d; date +%H:%M:%S)']: '"${INPUT}" >> ${LOG_FILE}
+    done
+    return
+  fi
+  echo '['$(date +%Y-%m-%d; date +%H:%M:%S)']: '"${1}" >> ${LOG_FILE}
+}
+
+# Finalise the log for the current run.
+displica_finalize_log() {
+  displica_log "Finished executing ${1}"
+}
+
+# Get the repository URI for a site.
+displica_site_git_repository() {
+  # ${1} => site name.
+  ID=$(terminus site info --site=${1} --field=id)
+  echo "ssh://codeserver.dev.${ID}@codeserver.dev.${ID}.drush.in:2222/~/repository.git"
+}
+
+# Clone repository.
+displica_clone_site() {
+  # ${1} => site name.
+  echo -e "\n[+]\t Cloning repository for the first time..."
+  REPO=$(displica_site_git_repository ${1})
+  git clone ${REPO} ${1}
+}
+
+displica_check_settings() {
+  if [ ! -e "sites/default/settings.php" ]; then
+    DB_NAME=$(displica_db_name ${1})
+    cp sites/default/default.settings.php sites/default/settings.php
+    # ${1} => site name.
+    echo "// Local development configuration.
+if (!defined('PANTHEON_ENVIRONMENT')) {
+  // Database.
+  \$databases['default']['default'] = array(
+    'database' => '${DB_NAME}',
+    'username' => '${DRUPAL_DB_USER}',
+    'password' => '${DRUPAL_DB_PASSWORD}',
+    'host' => '${DRUPAL_DB_HOST}',
+    'driver' => 'mysql',
+    'port' => 3306,
+    'prefix' => '',
+  );
+}" >> sites/default/settings.php
+  fi
+}
+
+# Create drush alias for new site.
+displica_create_drush_alias() {
+  if [ ! -e "~/.drush/${1}.aliases.drushrc.php" ]; then
+    DB_NAME=$(displica_db_name ${1})
+    echo "<?php
+\$aliases['${1}'] = array(
+  'root' => '/var/www/${1}',
+  'uri' => '${1}.pantheon.local',
+  'databases' => array (
+    'default' => array (
+      'default' => array (
+        'driver' => 'mysql',
+        'username' => '${DRUPAL_DB_USER}',
+        'password' => '${DRUPAL_DB_PASSWORD}',
+        'database' => '${DB_NAME}',
+      ),
+    ),
+  ),
+);" > ~/.drush/${1}.aliases.drushrc.php
+  fi
+}
+
+
+# Setting all required global variables.
+MYSQL_USER="root"
+MYSQL_PASSWORD="root"
+MYSQL_HOST="localhost"
+DRUPAL_DB_USER="vdd"
+DRUPAL_DB_PASSWORD="vddpantheon"
+DRUPAL_DB_HOST=${MYSQL_HOST}
+DRUPAL_WEB_HOST="localhost"
+DRUPAL_ROOT=~/sites
+LOG_FILE=/tmp/displica.log
+
+# Current command line.
+CMD_LINE="$0 $@"
+
+# Initialise log.
+displica_initialize_log "${CMD_LINE}"
+
+# Enter the Drupal root directory.
+cd ${DRUPAL_ROOT}
+
+# Parse command line.
+displica_parse_opts $@
+
+# Deployment.
+for SITE in ${SITES}; do
+  displica_print_title "Starting deployment for ${SITE}"
+
+  if [ ! -d ${DRUPAL_ROOT}/${SITE} ]; then
+    displica_clone_site ${SITE}
+  fi
+
+  cd ${DRUPAL_ROOT}/${SITE}
+
+  displica_create_drush_alias ${SITE}
+  displica_check_settings ${SITE}
+
+  echo -e "\n[+]\t Updating current branch..."
+  git pull 2>&1 | displica_log -
+  displica_error_check "An error occurred while trying to run 'git pull' on this location."
+
+  # Sync the database with the daily backup?
+  if [ ${DB_SYNC} -eq 1 ]; then
+    displica_import_db ${SITE} live
+    # Sanitise the database?
+    if [ ${DB_SANITIZE} -eq 1 ]; then
+      displica_sanitize_db ${SITE}
+    fi
+  fi
+  # Run updates.
+  displica_updb ${SITE}
+  # If we synced the DB during an update.
+  if [ ${DB_SYNC} -eq 1 ]; then
+    # Enable the CDN?
+    displica_enable_cdn ${SITE}
+  fi
+  # Clear caches and revert features.
+  displica_clear_caches ${SITE}
+  displica_print_title "Deployment for ${SITE} finished.\n\t Superadmin password is 'admin'; the password for all other users is 'password'."
+done
+
+
+# Show overridden or needing review features.
+#for SITE in ${SITES}; do
+#  UNCLEAN_FEATURES=$(drush @local.solas.${SITE} fl --status=enabled | grep -i "overridden\|needs review")
+#  NR_UNCLEAN_FEATURES=$(echo -e "${UNCLEAN_FEATURES}" | wc -l)
+#  if [ ${NR_UNCLEAN_FEATURES} -gt 0 ] && [ -n "${UNCLEAN_FEATURES}" ]; then
+#    echo -e "\n[+]\t ${NR_UNCLEAN_FEATURES} unclean features for $(echo ${SITE} | tr [:lower:] [:upper:])..."
+#    echo
+#    echo -e "${UNCLEAN_FEATURES}"
+#  fi
+#done
+
+# Finalise the log.
+displica_finalize_log "${CMD_LINE}"
