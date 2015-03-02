@@ -42,5 +42,5 @@ Vagrant.configure("2") do |config|
   config.vm.provision :shell, :path => "chef/shell/final.sh", :args => config_json["vm"]["ip"]
 
   # Install Terminus.
-  config.vm.provision :shell, :path => "pantheon/install-terminus.sh"
+  config.vm.provision :shell, :path => "pantheon/setup-pantheon.sh"
 end
