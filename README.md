@@ -6,4 +6,4 @@ This project only does the following:
 
 1. VirtualBox shared directories are slow, so they are disabled here; instead, you can mount a directory of your choice via `sshfs`;
 2. [Terminus CLI](https://github.com/pantheon-systems/cli) is installed by default;
-3. **[TODO]** A deployment script to deploy Pantheon site locally is provided.
+3. A deployment script to deploy Drupal Pantheon sites locally is provided.
