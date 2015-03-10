@@ -330,7 +330,7 @@ displica_create_drush_alias() {
     echo "<?php
 \$aliases['${1}'] = array(
   'root' => '/var/www/${1}',
-  'uri' => '${1}.pantheon.local',
+  'uri' => '${1}',
   'databases' => array (
     'default' => array (
       'default' => array (
@@ -345,6 +345,25 @@ displica_create_drush_alias() {
   fi
 }
 
+# Check if site exists.
+displica_is_site_valid() {
+  MESSAGE=$(terminus site info --site=${1} 2>&1 | grep Error)
+  if [ -n "${MESSAGE}" ]; then
+    echo "${MESSAGE}: ${1}"
+    exit 1
+  fi
+}
+
+# Check if a Pantheon session is present.
+displica_check_pantheon_session() {
+  while [ "$(terminus cli session-dump)" = "false" ]; do
+    echo -e "No Pantheon session found. Please login first..."
+    terminus auth login
+  done
+}
+
+# Check session first.
+displica_check_pantheon_session
 
 # Setting all required global variables.
 MYSQL_USER="root"
@@ -371,10 +390,16 @@ displica_parse_opts $@
 
 # Deployment.
 for SITE in ${SITES}; do
+  displica_is_site_valid ${SITE}
+
   displica_print_title "Starting deployment for ${SITE}"
 
+  # If site was never deployed before.
   if [ ! -d ${DRUPAL_ROOT}/${SITE} ]; then
+    # Clone the code.
     displica_clone_site ${SITE}
+    # Make sure a DB backup is imported locally.
+    DB_SYNC=1
   fi
 
   cd ${DRUPAL_ROOT}/${SITE}
@@ -407,16 +432,16 @@ for SITE in ${SITES}; do
 done
 
 
-# Show overridden or needing review features.
-#for SITE in ${SITES}; do
-#  UNCLEAN_FEATURES=$(drush @local.solas.${SITE} fl --status=enabled | grep -i "overridden\|needs review")
-#  NR_UNCLEAN_FEATURES=$(echo -e "${UNCLEAN_FEATURES}" | wc -l)
-#  if [ ${NR_UNCLEAN_FEATURES} -gt 0 ] && [ -n "${UNCLEAN_FEATURES}" ]; then
-#    echo -e "\n[+]\t ${NR_UNCLEAN_FEATURES} unclean features for $(echo ${SITE} | tr [:lower:] [:upper:])..."
-#    echo
-#    echo -e "${UNCLEAN_FEATURES}"
-#  fi
-#done
+#Show overridden or needing review features.
+for SITE in ${SITES}; do
+  UNCLEAN_FEATURES=$(drush @${SITE} fl --status=enabled | grep -i "overridden\|needs review")
+  NR_UNCLEAN_FEATURES=$(echo -e "${UNCLEAN_FEATURES}" | wc -l)
+  if [ ${NR_UNCLEAN_FEATURES} -gt 0 ] && [ -n "${UNCLEAN_FEATURES}" ]; then
+    echo -e "\n[+]\t ${NR_UNCLEAN_FEATURES} unclean features for $(echo ${SITE} | tr [:lower:] [:upper:])..."
+    echo
+    echo -e "${UNCLEAN_FEATURES}"
+  fi
+done
 
 # Finalise the log.
 displica_finalize_log "${CMD_LINE}"
