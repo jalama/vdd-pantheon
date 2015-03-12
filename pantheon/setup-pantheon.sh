@@ -21,3 +21,6 @@ sudo ln -s ../mods-available/vhost_alias.load
 sudo cp /vagrant/pantheon/pantheon.conf /etc/apache2/sites-available/
 cd /etc/apache2/sites-enabled/
 sudo ln -s ../sites-available/pantheon.conf
+
+# Prepare empty .drush directory.
+mkdir /home/vagrant/.drush
