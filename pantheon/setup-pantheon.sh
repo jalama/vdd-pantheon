@@ -15,3 +15,18 @@ sudo ln -s ../mods-available/vhost_alias.load
 sudo cp /vagrant/pantheon/pantheon.conf /etc/apache2/sites-available/
 cd /etc/apache2/sites-enabled/
 sudo ln -s ../sites-available/pantheon.conf
+
+# Install bash auto-complete support for Git.
+cd /tmp && wget https://raw.github.com/git/git/master/contrib/completion/git-completion.bash && sudo cp git-completion.bash /etc/profile.d/git-completion.sh
+
+# Install fancy bash prompt, colourful and with Git status support.
+(cd /tmp && git clone --depth 1 https://github.com/twolfson/sexy-bash-prompt && cd sexy-bash-prompt && make install) && source ~/.bashrc
+
+# Configure Git aliases.
+git config --global alias.co checkout
+git config --global alias.ci commit
+git config --global alias.st status
+git config --global alias.logtree "log --graph --oneline --decorate --all"
+
+# Get colourful git output (diff, etc)
+git config --global color.ui auto
