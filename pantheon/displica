@@ -432,7 +432,7 @@ for SITE in ${SITES}; do
 done
 
 
-#Show overridden or needing review features.
+# Show features that are overridden or in need of review.
 for SITE in ${SITES}; do
   UNCLEAN_FEATURES=$(drush @${SITE} fl --status=enabled | grep -i "overridden\|needs review")
   NR_UNCLEAN_FEATURES=$(echo -e "${UNCLEAN_FEATURES}" | wc -l)
