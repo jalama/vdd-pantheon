@@ -1,8 +1,6 @@
 # Vagrant Drupal Development for Pantheon
 
-This project is based on the original [VDD](https://www.drupal.org/project/vdd) and all the changes in their stable branch will be pulled into this repository. 
-
-However, we have made (and still making) additions and changes so to resemble the Pantheon stack as much as possible. 
+This project is based on the original [VDD](https://www.drupal.org/project/vdd) and all the changes in their stable branch will be pulled into this repository. However, we have made (and are still making) additions and changes so to resemble the Pantheon stack as much as possible. 
 
 ## Currently implemented changes
 
