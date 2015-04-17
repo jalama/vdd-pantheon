@@ -15,4 +15,4 @@ This project is based on the original [VDD](https://www.drupal.org/project/vdd) 
 
 ## Get started
 
-Setup instructions are the Wiki here on Github. [Check it out](https://github.com/artetecha/vdd-pantheon/wiki).
+Setup instructions are on the Wiki here on Github. [Check it out](https://github.com/artetecha/vdd-pantheon/wiki).
